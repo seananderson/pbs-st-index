@@ -56,22 +56,28 @@ head(d)
 
 fake_yrs <- data.frame(year = unique(d$year), fake_year = seq_along(unique(d$year)))
 d <- inner_join(d, fake_yrs, by = "year")
+d$X <- d$X / 10
+d$Y <- d$Y / 10
+
 dat <- rename(d, orig_year = year, year = fake_year)
 
 pg <- make_prediction_grid(d, region = survey_short)
+pg$X <- pg$X / 10
+pg$Y <- pg$Y / 10
 ```
 
 Fit models:
 
 ```{r, message=FALSE, warning=FALSE, results='hide'}
 m_inla_bin <- fit_inla3(dat,
-  response = "present", n_knots = 50,
+  response = "present", n_knots = 40,
   family = "binomial"
 )
 
 dpos <- filter(dat, present == 1)
+dpos$density <- dpos$density * 1e3
 m_inla_pos <- fit_inla3(dpos,
-  response = "density", n_knots = 50,
+  response = "density", n_knots = 40,
   family = "gamma"
 )
 ```
@@ -79,7 +85,7 @@ m_inla_pos <- fit_inla3(dpos,
 Draw from posterior and project onto grid:
 
 ```{r}
-pg_one_year <- filter(pg, year == min(pg$year))
+pg_one_year <- dplyr::filter(pg, year == min(pg$year))
 p_bin <- predict_inla3(m_inla_bin, pred_grid = pg_one_year, samples = 1000)
 p_pos <- predict_inla3(m_inla_pos, pred_grid = pg_one_year, samples = 1000)
 ```
@@ -119,7 +125,8 @@ yr_est <- reshape2::melt(yr_est) %>%
   rename(i = Var1, fake_year = Var2) %>%
   inner_join(fake_yrs, by = "fake_year")
 ggplot(yr_est, aes(as.factor(year), value)) + geom_violin() +
-  theme_pbs()
+  theme_pbs() +
+  ylim(0, NA)
 ```
 
 Calculate bootstrapped design based index:
@@ -165,7 +172,7 @@ out_boot <- boot_biomass(surv)
 
 Compare:
 
-```{r}
+```{r, fig.width=9}
 total_area <- group_by(surv, grouping_code) %>%
   summarise(area = area_km2[[1]]) %>%
   summarise(area = sum(area)) %>%
@@ -174,9 +181,9 @@ square <- total_area / nrow(pg_one_year)
 
 yr_est_summ <- group_by(yr_est, year) %>%
   summarise(
-    lwr = quantile(value * 1e6 * square, probs = 0.025),
-    upr = quantile(value * 1e6 * square, probs = 0.975),
-    biomass = quantile(value * 1e6 * square, probs = 0.5)
+    lwr = quantile(value * 1e3 * square, probs = 0.025),
+    upr = quantile(value * 1e3 * square, probs = 0.975),
+    biomass = quantile(value * 1e3 * square, probs = 0.5)
   ) %>%
   mutate(type = "spatiotemporal")
 
@@ -191,6 +198,9 @@ ggplot(both, aes(as.numeric(year), biomass,
   geom_ribbon(alpha = 0.2, lwd = 0) +
   geom_line(lwd = 1) +
   theme_pbs() +
-  scale_fill_manual(values = c("black", "blue")) +
-  scale_colour_manual(values = c("black", "blue"))
+  ylim(0, NA) +
+  scale_fill_manual(values = c("#474747", "#2188ff")) +
+  scale_colour_manual(values = c("#474747", "#2188ff")) +
+  ylab("Biomass") + xlab("Year") +
+  labs(fill = "Type", colour = "Type")
 ```
