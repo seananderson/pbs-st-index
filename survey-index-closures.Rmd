@@ -1,0 +1,158 @@
+---
+title: "Exploring the impact of closed areas on trawl survey biomass index trends"
+output: html_document
+---
+
+Let's load the survey data frames to work with. These are generated from the PBSsynopsis package. We will work with 4 example species.
+
+```{r, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+theme_set(ggsidekick::theme_sleek())
+```
+
+```{r load_dat, cache=TRUE}
+areas <- readRDS("../pbs-synopsis/data-cache/stratum-areas.rds")
+
+survey_tows <- readRDS("../pbs-synopsis/data-cache/all-survey-spatial-tows.rds") %>%
+  inner_join(areas, by = c("survey_id", "grouping_code"))
+
+spp <- c("shortraker rockfish", "lingcod", "dover sole", "canary rockfish",
+  "pacific ocean perch")
+survey_tows_select <- filter(survey_tows, species_common_name %in% spp)
+```
+
+First we need to write a function that calculates biomass for a given year and survey by taking the mean density within each stratum and summing those densities multiplied by the stratum areas:
+
+```{r calc_bio}
+calc_bio <- function(dat, i = seq_len(nrow(dat))) {
+  dat[i, ] %>% group_by(year, survey_id, area_km2, grouping_code) %>% 
+    summarise(density = mean(density_kgpm2*1e6)) %>% 
+    group_by(year) %>% 
+    summarise(biomass = sum(density * area_km2)) %>% 
+    pull(biomass)
+}
+```
+
+Let's test our function against the previously calculated indices. The red line represents the existing index. That grey line represents our own calculation.
+
+```{r bio, fig.width=5, fig.height=3.5}
+bio <- survey_tows %>% 
+  filter(species_common_name %in% "pacific ocean perch") %>%
+  filter(survey_series_id == 3) %>% 
+  calc_bio()
+
+boot_ind <- readRDS("../pbs-synopsis/data-cache/all-boot-biomass-indices.rds") %>%
+  filter(species_common_name %in% "pacific ocean perch") %>% 
+  filter(survey_series_id == 3)
+
+ggplot(data.frame(biomass = bio, year = boot_ind$year),
+  aes(year, biomass)) + geom_line(lwd = 4, col = "grey80") +
+  geom_line(data = boot_ind, colour = "red") +
+  ylim(0, NA)
+```
+
+They are exactly the same. So our biomass calculation function works.
+
+Now let's pipe our data through a bootstrap function to calculate the percentile bootstrap confidence intervals. Note that the `.` below refers to the respective chunk of data.
+
+```{r boot_biomass}
+boot_biomass <- function(dat, reps = 100) {
+  out <- dat %>%
+    group_by(year, species_common_name, survey_series_desc) %>% 
+    do({
+      b <- boot::boot(., statistic = calc_bio, strata = .$grouping_code, R = reps)
+      suppressWarnings(bci <- boot::boot.ci(b, type = "perc"))
+      tibble::tibble(
+        mean_boot = mean(b$t), 
+        median_boot = median(b$t), 
+        lwr = bci$percent[[4]], 
+        upr = bci$percent[[5]], 
+        cv = sd(b$t)/mean(b$t),
+        biomass = calc_bio(.))
+    })
+}
+```
+
+```{r boot, cache=TRUE, dependson=c('calc_bio', 'load_dat', 'boot_biomass')}
+out <- boot_biomass(survey_tows_select, reps = 100)
+```
+
+```{r glimpse}
+glimpse(out)
+```
+
+And plot that out:
+
+```{r multiplot, fig.width=11, fig.height=8}
+ggplot(out, aes(year, biomass, fill = survey_series_desc)) + 
+  geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.3) +
+  geom_line() + geom_point() +
+  facet_wrap(species_common_name~survey_series_desc, scales = "free_y", ncol = 4) +
+  ylim(0, NA) + 
+  guides(fill = FALSE)
+```
+
+Now let's try randomly removing 1/2 of the tows:
+
+**(The next step is to manually draw candidate closed areas and remove the tows based on their latitude and longitude. I would expect this to have a larger effect since it removes consistent spatial blocks.)**
+
+```{r cut1}
+set.seed(42)
+nrow(survey_tows_select)
+survey_tows_cut1 <- survey_tows_select %>% 
+  group_by(survey_series_desc) %>% 
+  sample_frac(size = 1/2) %>% 
+  ungroup()
+nrow(survey_tows_cut1)
+```
+
+```{r boot1, cache=TRUE, dependson=c('calc_bio', 'load_dat', 'boot_biomass', 'cut1')}
+out1 <- boot_biomass(survey_tows_cut1, reps = 100)
+```
+
+And plot a comparison:
+
+```{r comparison1, fig.width=11, fig.height=8}
+mutate(out, type = "all") %>% 
+  bind_rows(mutate(out1, type = "restricted")) %>% 
+  ggplot(aes(year, biomass, fill = type)) + 
+  geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.2) +
+  geom_line(aes(colour = type)) +
+  facet_wrap(species_common_name~survey_series_desc, scales = "free_y", ncol = 4) +
+  ylim(0, NA) + 
+  guides(fill = FALSE)
+```
+
+So it can have a considerable effect, especially for species that are caught less frequently (e.g. shortraker rockfish). Again, I imagine these effects will be more dramatic with consistent spatial sections removed.
+
+How do the CVs compare? Thin lines represent individual years and the thick lines represent the mean CVs across years. 
+
+```{r, fig.width=8}
+means <- mutate(out, type = "all") %>% 
+  bind_rows(mutate(out1, type = "restricted")) %>% 
+  group_by(type, survey_series_desc, species_common_name) %>% 
+  summarise(mean_cv = mean(cv, na.rm = TRUE)) %>% 
+  reshape2::dcast(survey_series_desc + species_common_name ~ type, 
+    value.var = "mean_cv")
+
+all <- mutate(out, type = "all") %>% 
+  bind_rows(mutate(out1, type = "restricted")) %>% 
+  reshape2::dcast(year + survey_series_desc + species_common_name ~ type, 
+    value.var = "cv")
+
+ggplot(all) + 
+  facet_wrap(~survey_series_desc, scales = "free_y") +
+  geom_segment(aes(x = 1, xend = 2, y = all, yend = restricted, 
+    colour = species_common_name), alpha = 0.3) +
+  geom_segment(data = means, aes(x = 1, xend = 2, y = all, yend = restricted, 
+    colour = species_common_name), lwd = 2) + 
+  ylab("CV") +
+  xlab("") +
+  scale_x_continuous(breaks = c(1, 2), labels = c("All", "Restricted"))
+  # scale_colour_brewer(palette = "Dark2")
+```
+
+This has less of an overall effect than I would have expected although year-to-year there can be fairly dramatic increases in the annual CV calculated through the bootstrap.
+
+Someday down the road this will be a nice framework for comparing spatiotemporal model-based indexed standardization to the bootstrap approach with spatial closures.

@@ -1,0 +1,53 @@
+---
+title: "test-glmmfields"
+output: html_document
+---
+
+```{r}
+initf <- function(init_b0, n_time, n_knots, n_beta, type = "lognormal") {
+  ini <- list(
+    gp_sigma = rlnorm(1, log(1), 0.05),
+    gp_theta = rlnorm(1, log(2), 0.05),
+    phi = array(0.8, dim = 1),
+    B = c(init_b0, rnorm(n_beta, 0, 0.05)),
+    spatialEffectsKnots =
+      matrix(runif(n_time * n_knots, -0.05, 0.05),
+        nrow = n_time, ncol = n_knots
+      )
+  )
+  if (type == "lognormal") {
+    ini$cv <- array(rlnorm(1, log(1.0), 0.05), dim = 1)
+  }
+  ini
+}
+```
+
+```{r}
+dpos <- filter(d, present == 1)
+m1 <- glmmfields(density ~ depth_scaled + depth_scaled2,
+  time = "year", lat = "Y10", lon = "X10", data = dpos,
+  nknots = 15, iter = 400, chains = 1, estimate_ar = TRUE,
+  family = lognormal(link = "log"),
+  control = list(adapt_delta = 0.98, max_treedepth = 20),
+  init = function() initf(
+        init_b0 = 0,
+        length(unique(dpos$year)), 15, 2
+  )
+)
+m1
+
+m2 <- glmmfields(present ~ depth_scaled + depth_scaled2,
+  time = "year", lat = "Y", lon = "X", data = d,
+  nknots = 15, iter = 400, chains = 1, estimate_ar = TRUE,
+  family = binomial(link = "logit"),
+  control = list(adapt_delta = 0.98, max_treedepth = 20),
+  init = function() initf(
+        init_b0 = 0,
+        length(unique(d$year)), 15, 2, type = "binomial"
+  )
+)
+```
+
+```{r}
+p1 <- predict(m1, newdata = pg)
+```
