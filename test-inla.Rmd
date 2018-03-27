@@ -63,15 +63,15 @@ pg <- make_prediction_grid(d, region = survey_short)
 
 Fit models:
 
-```{r}
+```{r, message=FALSE, warning=FALSE, results='hide'}
 m_inla_bin <- fit_inla3(dat,
-  response = "present", n_knots = 60,
+  response = "present", n_knots = 50,
   family = "binomial"
 )
 
 dpos <- filter(dat, present == 1)
 m_inla_pos <- fit_inla3(dpos,
-  response = "density", n_knots = 60,
+  response = "density", n_knots = 50,
   family = "gamma"
 )
 ```
@@ -165,25 +165,13 @@ out_boot <- boot_biomass(surv)
 
 Compare:
 
-```{r, eval=FALSE, echo=FALSE, include=FALSE}
+```{r}
 total_area <- group_by(surv, grouping_code) %>%
   summarise(area = area_km2[[1]]) %>%
   summarise(area = sum(area)) %>%
   pull(area)
 square <- total_area / nrow(pg_one_year)
 
-ggplot(out_boot, aes(as.factor(year), biomass)) +
-  geom_violin(
-    data = yr_est, aes(as.factor(year), value * 1e6 * square),
-    inherit.aes = FALSE
-  ) +
-  geom_pointrange(aes(ymin = lwr, ymax = upr)) +
-  theme_pbs()
-```
-
-Compare with 'ribbons':
-
-```{r}
 yr_est_summ <- group_by(yr_est, year) %>%
   summarise(
     lwr = quantile(value * 1e6 * square, probs = 0.025),
