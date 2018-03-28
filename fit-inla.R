@@ -1,20 +1,28 @@
-fit_inla3 <- function(d, response = "present", n_knots = 50,
-                      family = "binomial", plot = FALSE) {
+fit_inla <- function(d, response = "present", n_knots = 50,
+                      family = "binomial", max_edge = c(3, 10),
+                      kmeans = TRUE,
+                      plot = FALSE, fit_model = TRUE,
+                      extend = list(n = 8, offset = -0.1),
+                      offset = c(1, 5), cutoff = 1,
+                      include_depth = TRUE) {
+
   coords <- as.matrix(unique(d[, c("X", "Y")]))
 
   # use kmeans() to calculate centers:
-  km <- stats::kmeans(x = coords, centers = n_knots)
-  mesh <- INLA::inla.mesh.create(km$centers)
 
-  # max_edge <- c(1, 3)
-  # convex <- 1.0
-  # bnd <- inla.nonconvex.hull(coords, convex = convex)
-  # mesh <- inla.mesh.2d(
-  #   boundary = bnd,
-  #   max.edge = max_edge,
-  #   cutoff = 0.01,
-  #   offset = 1.5
-  # )
+  if (kmeans) {
+    km <- stats::kmeans(x = coords, centers = n_knots)
+    mesh <- INLA::inla.mesh.create(km$centers,
+      extend = extend)
+  } else {
+    bnd <- inla.nonconvex.hull(coords)
+    mesh <- inla.mesh.2d(
+      offset = offset,
+      boundary = bnd,
+      max.edge = max_edge,
+      cutoff = cutoff
+    )
+  }
 
   if (plot) {
     plot(mesh)
@@ -41,8 +49,10 @@ fit_inla3 <- function(d, response = "present", n_knots = 50,
     dat[dat$time == j, years_lab[j]] <- 1
   }
 
-  dat$depth <- d$depth_scaled
-  dat$depth2 <- d$depth_scaled2
+  if (include_depth) {
+    dat$depth <- d$depth_scaled
+    dat$depth2 <- d$depth_scaled2
+  }
 
   # construct index for ar1 model:
   iset <- INLA::inla.spde.make.index(
@@ -86,18 +96,22 @@ fit_inla3 <- function(d, response = "present", n_knots = 50,
     "control.group = list(model = 'ar1'))"
   ))
 
-  model <- INLA::inla(formula,
-    family = family,
-    data = INLA::inla.stack.data(sdat),
-    control.predictor = list(
-      compute = TRUE,
-      A = INLA::inla.stack.A(sdat)
-    ),
-    control.compute = list(config = TRUE),
-    verbose = TRUE,
-    debug = FALSE,
-    keep = FALSE
-  )
+  if (fit_model) {
+    model <- INLA::inla(formula,
+      family = family,
+      data = INLA::inla.stack.data(sdat),
+      control.predictor = list(
+        compute = TRUE,
+        A = INLA::inla.stack.A(sdat)
+      ),
+      control.compute = list(config = TRUE),
+      verbose = TRUE,
+      debug = FALSE,
+      keep = FALSE
+    )
+  } else {
+    model <- NA
+  }
 
   list(
     model = model, mesh = mesh, spde = spde, data = dat,
@@ -105,20 +119,24 @@ fit_inla3 <- function(d, response = "present", n_knots = 50,
   )
 }
 
-predict_inla3 <- function(obj, pred_grid, samples = 100L) {
+predict_inla <- function(obj, pred_grid, samples = 100L,
+                          include_depth = TRUE) {
   mesh <- obj$mesh
   model <- obj$model
   iset <- obj$iset
 
   inla.mcmc <- INLA::inla.posterior.sample(n = samples, model)
 
+  # get indices of various effects:
   latent_names <- rownames(inla.mcmc[[1]]$latent)
   re_indx <- grep("^i2D", latent_names)
-  depth_fe_indx1 <- grep("^depth$", latent_names)
-  depth_fe_indx2 <- grep("^depth2$", latent_names)
   yr_fe_indx <- grep("^Y[0-9]+$", latent_names)
+  if (include_depth) {
+    depth_fe_indx1 <- grep("^depth$", latent_names)
+    depth_fe_indx2 <- grep("^depth2$", latent_names)
+  }
 
-  # Read in locations and knots, form projection matrix
+  # read in locations and knots, form projection matrix
   grid_locs <- pred_grid[, c("X", "Y")]
 
   # projections will be stored as an array:
@@ -132,16 +150,26 @@ predict_inla3 <- function(obj, pred_grid, samples = 100L) {
     # random effects from this year:
     indx <- which(iset$i2D.group == yr)
     for (i in seq_len(samples)) {
+
       if (yr > 1) {
         year_diff <- inla.mcmc[[i]]$latent[yr_fe_indx[[yr]]]
       } else {
         year_diff <- 0
       }
+
+      if (include_depth) {
+        depth_effects <-
+          pred_grid[, "depth_scaled"] * inla.mcmc[[i]]$latent[depth_fe_indx1] +
+          pred_grid[, "depth_scaled2"] * inla.mcmc[[i]]$latent[depth_fe_indx2]
+      } else {
+        depth_effects <- 0
+      }
+
       projected_latent_grid[, i, yr] <-
         as.numeric(proj_matrix %*% inla.mcmc[[i]]$latent[re_indx][indx]) +
-        pred_grid[, "depth_scaled"] * inla.mcmc[[i]]$latent[depth_fe_indx1] +
-        pred_grid[, "depth_scaled2"] * inla.mcmc[[i]]$latent[depth_fe_indx2] +
-        inla.mcmc[[i]]$latent[yr_fe_indx[[1]]] + year_diff
+        inla.mcmc[[i]]$latent[yr_fe_indx[[1]]] + # base year
+        year_diff + # 0 for the base year, diff otherwise
+        depth_effects
     }
   }
 
