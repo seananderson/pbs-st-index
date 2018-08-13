@@ -33,55 +33,66 @@ d_survey_sets <- get_survey_sets("pacific cod")
 ```
 
 ```{r local-load, echo=FALSE, eval=TRUE, include=FALSE, cache=FALSE}
-d_survey_sets <- readRDS("../gfplot/inst/pcod-cache/pbs-survey-sets.rds")
+# d_survey_sets <- readRDS("../gfplot/inst/pcod-cache/pbs-survey-sets.rds")
+d <- readRDS("~/src/gfsynopsis/report/data-cache3/pacific-cod.rds")
+d_survey_sets <- filter(d$survey_sets, survey_abbrev %in% c("SYN WCVI", "SYN QCS", "SYN HS", "SYN WCHG"))
 ```
 
 Set which survey we want:
 
 ```{r survey-selection, cache=FALSE}
-survey <- "Queen Charlotte Sound Synoptic Survey"
-survey_short <- "QCS"
+# survey <- "Queen Charlotte Sound Synoptic Survey"
+survey_short <- c("SYN WCVI", "SYN WCHG", "SYN HS", "SYN QCS")
 ```
 
 Prepare data and create prediction grid:
 
 ```{r data-prep, cache=FALSE}
-d <- gfplot:::tidy_survey_sets(d_survey_sets,
-  survey = survey,
-  years = 2000:2017
-)
+d <- plyr::ldply(survey_short, function(x) {
+  data.frame(gfplot:::tidy_survey_sets(d_survey_sets,
+    survey = x,
+    years = 2000:2017
+  ), survey = x, stringsAsFactors = FALSE)
+}) %>% as_data_frame()
+
 sum(is.na(d$depth))
 d <- d[!is.na(d$depth), , drop = FALSE]
 d <- gfplot:::scale_survey_predictors(d)
 head(d)
 
-fake_yrs <- data.frame(year = unique(d$year), fake_year = seq_along(unique(d$year)))
+fake_yrs <- data.frame(year = sort(unique(d$year)), fake_year = seq_along(unique(d$year)))
 d <- inner_join(d, fake_yrs, by = "year")
-d$X <- d$X / 10 # for computational purposes
-d$Y <- d$Y / 10 # for computational purposes
+# d$X <- d$X / 10 # for computational purposes
+# d$Y <- d$Y / 10 # for computational purposes
 
 dat <- rename(d, orig_year = year, year = fake_year)
 
-pg_out <- make_prediction_grid(d, region = survey_short)
-cell_area <- pg_out$cell_area
-pg <- pg_out$grid
-pg$X <- pg$X / 10
-pg$Y <- pg$Y / 10
+pg <- plyr::ldply(survey_short, function(x) {
+  gfplot:::make_prediction_grid(filter(d, year %in% c(2016, 2017)), survey = x)$grid
+})
+cell_area <- gfplot:::make_prediction_grid(filter(d, year %in% c(2016, 2017)), survey = survey_short[[1]])$cell_area
+# pg <- pg_out$grid
+# pg$X <- pg$X / 10
+# pg$Y <- pg$Y / 10
 ```
 
 Fit models:
 
 ```{r inla-fit, message=FALSE, warning=FALSE, results='hide'}
-m_inla_bin <- fit_inla(dat,
-  response = "present", n_knots = 50, fit_model = TRUE,
-  family = "binomial", plot = TRUE, kmeans = TRUE, include_depth = FALSE
+m_inla_bin <- fit_inla2(dat,
+  response = "present", fit_model = T,
+  max_edge = c(60, 120),
+  family = "binomial", plot = TRUE, include_depth = TRUE,
+  offset = c(25, 50), cutoff = 40
 )
 
 dpos <- filter(dat, present == 1)
 dpos$density <- dpos$density * 1e3 # for computational purposes; too small otherwise
-m_inla_pos <- fit_inla(dpos, n_knots = 50, fit_model = TRUE,
-  response = "density", kmeans = TRUE, include_depth = FALSE,
-  family = "gamma"
+m_inla_pos <- fit_inla2(dpos,
+  response = "density", fit_model = T,
+  family = "gamma", plot = TRUE, include_depth = TRUE,
+  max_edge = c(60, 120),
+  offset = c(25, 50), cutoff = 40
 )
 ```
 
@@ -89,8 +100,8 @@ Draw from posterior and project onto grid:
 
 ```{r posterior-draws}
 pg_one_year <- filter(pg, year == min(pg$year))
-p_bin <- predict_inla(m_inla_bin, pred_grid = pg_one_year, samples = 500, include_depth = FALSE)
-p_pos <- predict_inla(m_inla_pos, pred_grid = pg_one_year, samples = 500, include_depth = FALSE)
+p_bin <- predict_inla(m_inla_bin, pred_grid = pg_one_year, samples = 200, include_depth = FALSE)
+p_pos <- predict_inla(m_inla_pos, pred_grid = pg_one_year, samples = 200, include_depth = FALSE)
 ```
 
 Calculate probability * Gamma median values on the grid:
@@ -100,7 +111,7 @@ out <- stats::plogis(p_bin) * exp(p_pos)
 out_median <- apply(out, c(1, 3), median)
 
 pg_all <- bind_rows(replicate(dim(p_bin)[3], pg_one_year, simplify = FALSE))
-pg_all$year <- rep(unique(pg$year), each = nrow(pg_one_year))
+pg_all$year <- rep(fake_yrs$year, each = nrow(pg_one_year))
 out_long <- reshape2::melt(out_median)
 pg_all$pred <- out_long$value
 ```

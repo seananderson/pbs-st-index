@@ -1,22 +1,22 @@
-fit_inla <- function(d, response = "present", n_knots = 50,
-                      family = "binomial", max_edge = c(3, 10),
-                      kmeans = TRUE,
+fit_inla2 <- function(d, response = "present", n_knots = 50,
+                      family = "binomial", max_edge = c(20, 100),
+                      kmeans = FALSE,
                       plot = FALSE, fit_model = TRUE,
                       extend = list(n = 8, offset = -0.1),
-                      offset = c(1, 5), cutoff = 1,
+                      offset = c(5, 25), cutoff = 10,
                       include_depth = TRUE) {
 
   coords <- as.matrix(unique(d[, c("X", "Y")]))
 
   # use kmeans() to calculate centers:
-
   if (kmeans) {
     km <- stats::kmeans(x = coords, centers = n_knots)
     mesh <- INLA::inla.mesh.create(km$centers,
-      extend = extend)
+      extend = extend
+    )
   } else {
-    bnd <- inla.nonconvex.hull(coords)
-    mesh <- inla.mesh.2d(
+    bnd <- INLA::inla.nonconvex.hull(coords)
+    mesh <- INLA::inla.mesh.2d(
       offset = offset,
       boundary = bnd,
       max.edge = max_edge,
@@ -24,9 +24,10 @@ fit_inla <- function(d, response = "present", n_knots = 50,
     )
   }
 
+  message("INLA max_edge = ", "c(", max_edge[[1]], ", ", max_edge[[2]], ")")
   if (plot) {
-    plot(mesh)
-    points(coords)
+    graphics::plot(mesh, asp = 1)
+    graphics::points(coords, col = "#FF000030")
   }
 
   spde <- INLA::inla.spde2.matern(mesh, alpha = 3 / 2)
@@ -103,6 +104,10 @@ fit_inla <- function(d, response = "present", n_knots = 50,
       control.predictor = list(
         compute = TRUE,
         A = INLA::inla.stack.A(sdat)
+      ),
+      control.fixed = list(
+        mean = 0, prec = 1 / (5^2),
+        mean.intercept = 0, prec.intercept = 1 / (20^2)
       ),
       control.compute = list(config = TRUE),
       verbose = TRUE,

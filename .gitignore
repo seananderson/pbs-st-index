@@ -1,0 +1,14 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+*.pdf
+*.RData
+*.rdx
+*.rdb
+*.png
+inla-cache/*
+*.rds
+*.html
+*html*
+*.rda
