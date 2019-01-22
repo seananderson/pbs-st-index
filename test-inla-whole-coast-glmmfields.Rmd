@@ -1,0 +1,278 @@
+---
+title: "Test survey index standardization with spatiotemporal model"
+author: "Sean C. Anderson"
+date: "2018-03-27"
+output:
+  html_document
+---
+
+```{r knitr-opts, echo = FALSE, cache=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  cache = TRUE,
+  autodep = TRUE,
+  fig.path = "inla-figs/",
+  cache.path = "inla-cache/"
+)
+```
+
+```{r package-prep, message=FALSE, warning=FALSE, cache=FALSE}
+library(dplyr)
+library(ggplot2)
+library(gfplot)
+library(dplyr)
+library(INLA)
+source("fit-inla.R")
+```
+
+Start by reading in the data:
+
+```{r get-data, eval=FALSE}
+d_survey_sets <- get_survey_sets("pacific cod")
+```
+
+```{r local-load, echo=FALSE, eval=TRUE, include=FALSE, cache=FALSE}
+# d_survey_sets <- readRDS("../gfplot/inst/pcod-cache/pbs-survey-sets.rds")
+d <- readRDS("~/src/gfsynopsis/report/data-cache/pacific-cod.rds")
+d_survey_sets <- filter(d$survey_sets, survey_abbrev %in% c("SYN WCVI", "SYN QCS", "SYN HS", "SYN WCHG"))
+```
+
+Set which survey we want:
+
+```{r survey-selection, cache=FALSE}
+survey <- "Queen Charlotte Sound Synoptic Survey"
+survey_short <- c("SYN WCVI", "SYN WCHG", "SYN HS", "SYN QCS")
+```
+
+Prepare data and create prediction grid:
+
+```{r data-prep, cache=FALSE}
+d <- plyr::ldply(survey_short, function(x) {
+  data.frame(gfplot:::tidy_survey_sets(d_survey_sets,
+    survey = x,
+    years = 2000:2017
+  ), survey = x, stringsAsFactors = FALSE)
+}) %>% as_data_frame()
+
+sum(is.na(d$depth))
+d <- d[!is.na(d$depth), , drop = FALSE]
+d <- gfplot:::scale_survey_predictors(d)
+head(d)
+
+fake_yrs <- data.frame(year = sort(unique(d$year)), fake_year = seq_along(unique(d$year)))
+d <- inner_join(d, fake_yrs, by = "year")
+# d$X <- d$X / 10 # for computational purposes
+# d$Y <- d$Y / 10 # for computational purposes
+
+dat <- rename(d, orig_year = year, year = fake_year)
+
+pg <- plyr::ldply(survey_short, function(x) {
+  gfplot:::make_prediction_grid(filter(d, year %in% c(2016, 2017)), survey = x)$grid
+})
+cell_area <- gfplot:::make_prediction_grid(filter(d, year %in% c(2016, 2017)), survey = survey_short[[1]])$cell_area
+# pg <- pg_out$grid
+# pg$X <- pg$X / 10
+# pg$Y <- pg$Y / 10
+```
+
+Fit models:
+
+```{r inla-fit, message=FALSE, warning=FALSE, results='hide'}
+library(glmmfields)
+xx <- dplyr::filter(dat, survey == "SYN QCS")
+xx$year <- as.numeric(as.factor(as.character(xx$orig_year)))
+xx$X10 <- xx$X10 / 10
+xx$Y10 <- xx$Y10 / 10
+
+initf <- function(init_b0, n_time, n_knots, n_beta, type = "lognormal") {
+  ini <- list(
+    gp_sigma = rlnorm(1, log(1), 0.05),
+    gp_theta = rlnorm(1, log(1), 0.05),
+    phi = array(0.6, dim = 1),
+    B = c(init_b0, rnorm(n_beta, 0, 0.05)),
+    spatialEffectsKnots =
+      matrix(runif(n_time * n_knots, -0.05, 0.05),
+        nrow = n_time, ncol = n_knots
+      )
+  )
+  if (type == "lognormal") {
+    ini$cv <- array(rlnorm(1, log(1.0), 0.05), dim = 1)
+  }
+   if (type == "normal") {
+    ini$sigma <- array(rnorm(1, log(1.0), 0.05), dim = 1)
+  }
+  ini
+}
+
+n_knots <- 18
+n_beta <- length(unique(xx$year)) + 2 - 1
+m_bin <- glmmfields(present ~ as.factor(year) + depth_scaled + depth_scaled2, 
+  time = "year", 
+  lon = "X10", lat = "Y10", family = binomial(link = "logit"), 
+  chains = 1, nknots = n_knots,
+  estimate_df = FALSE, covariance = "squared-exponential", 
+  estimate_ar = TRUE, iter = 400,
+  prior_gp_theta = glmmfields::half_t(7, 0, 4),
+  prior_gp_sigma = glmmfields::half_t(7, 0, 4),
+  prior_intercept = glmmfields::half_t(7, 0, 8),
+  prior_beta = glmmfields::half_t(500, 0, 3),
+  prior_sigma = glmmfields::half_t(7, 0, 2),
+  cluster = "pam",
+  cores = 2,
+  init = function() initf(
+    init_b0 = 0,
+    length(unique(xx$year)), n_knots, n_beta, type = "binomial"
+  ),
+  data = xx, control = list(adapt_delta = 0.85, max_treedepth = 20))
+
+xx$density1000 <- xx$density * 1000
+
+m_pos <- glmmfields(density1000 ~ as.factor(year) + depth_scaled + depth_scaled2, 
+  time = "year", 
+  lon = "X10", lat = "Y10",
+  chains = 4, nknots = n_knots,
+  estimate_df = FALSE, covariance = "exponential", 
+  estimate_ar = TRUE, iter = 600, family = glmmfields::lognormal(link = "log"),
+  prior_gp_theta = glmmfields::half_t(7, 0, 10),
+  prior_gp_sigma = glmmfields::half_t(7, 0, 10),
+  prior_intercept = glmmfields::half_t(7, 0, 10),
+  prior_beta = glmmfields::half_t(500, 0, 3),
+  prior_sigma = glmmfields::half_t(7, 0, 2),
+  cluster = "pam",
+  cores = 4,
+  init = function() initf(
+    init_b0 = 0,
+    length(unique(xx$year)), n_knots, n_beta, type = "lognormal"
+  ),
+  data = dplyr::filter(xx, density > 0), 
+  control = list(adapt_delta = 0.8, max_treedepth = 20))
+
+mm <- brm(present ~ as.factor(year) + s(depth_scaled) + t2(X10, Y10, year), 
+  data = xx, family = bernoulli(link = "logit"), chains = 1, iter = 300)
+
+
+if (!file.exists("bin-model-glmmfields.rds")) {
+  inla.setOption(scale.model.default = TRUE)
+  m_inla_bin <- fit_inla2(xx,
+    response = "present", fit_model = TRUE,
+    max_edge = c(30, 100),
+    family = "binomial", plot = TRUE, include_depth = TRUE,
+    offset = c(5, 25), cutoff = 10
+  )
+  saveRDS(m_inla_bin, "bin-model.rds")
+} else {
+  m_inla_bin <- readRDS("bin-model.rds")
+}
+
+dpos <- filter(dat, present == 1)
+dpos$density <- dpos$density * 1e3 # for computational purposes; too small otherwise
+if (!file.exists("pos-model.rds")) {
+  m_inla_pos <- fit_inla2(dpos,
+    response = "density", fit_model = TRUE,
+    family = "gamma", plot = TRUE, include_depth = TRUE,
+    max_edge = c(70, 140),
+    offset = c(25, 50), cutoff = 50
+  )
+  saveRDS(m_inla_pos, "pos-model.rds")
+} else {
+  m_inla_pos <- readRDS("pos-model.rds")
+}
+```
+
+Draw from posterior and project onto grid:
+
+```{r posterior-draws}
+pg_one_year <- filter(pg, year == min(pg$year))
+p_bin <- predict_inla(m_inla_bin, pred_grid = pg_one_year, samples = 200, include_depth = TRUE)
+p_pos <- predict_inla(m_inla_pos, pred_grid = pg_one_year, samples = 200, include_depth = TRUE)
+```
+
+Calculate probability * Gamma median values on the grid:
+
+```{r prediction-grid-calcs}
+out <- stats::plogis(p_bin) * exp(p_pos)
+out_median <- apply(out, c(1, 3), median)
+
+out_bin <- stats::plogis(p_bin)
+out_bin <- apply(out_bin, c(1, 3), median)
+
+pg_all <- bind_rows(replicate(dim(p_bin)[3], pg_one_year, simplify = FALSE))
+pg_all$year <- rep(fake_yrs$year, each = nrow(pg_one_year))
+out_long <- reshape2::melt(out_median)
+pg_all$pred <- out_long$value
+
+out_long_bin <- reshape2::melt(out_bin)
+pg_all$pred_bin <- out_long_bin$value
+```
+
+Spatiotemporal plot:
+
+```{r spatio-temporal-plot, fig.width=9, fig.height=9}
+coast <- gfplot:::load_coastline(range(d$lon), range(d$lat), utm_zone = 9)
+isobath <- gfplot:::load_isobath(range(d$lon), range(d$lat),
+  bath = c(100, 200, 500), utm_zone = 9
+)
+map_padding <- c(-5, 5)
+
+make_plot <- function(dat, fill = "sqrt(pred)") {
+  g <- ggplot(dat, aes(X * 10, Y * 10)) +
+    geom_raster(aes_string(fill = fill)) +
+    scale_fill_viridis_c(option = "C") +
+    facet_wrap(~ year) +
+    geom_polygon(
+      data = coast, aes_string(x = "X", y = "Y", group = "PID"),
+      fill = "grey80"
+    ) +
+    geom_point(
+      data = filter(d, present == 1),
+      aes(x = X * 10, y = Y * 10, size = density), inherit.aes = FALSE,
+      pch = 21, col = "white", alpha = 0.3
+    ) +
+    geom_point(
+      data = filter(d, present == 0),
+      aes(x = X * 10, y = Y * 10), inherit.aes = FALSE,
+      pch = 4, col = "white", alpha = 0.2
+    )
+  
+  g <- g + geom_path(
+    data = isobath, aes_string(
+      x = "X", y = "Y",
+      group = "paste(PID, SID)"
+    ),
+    inherit.aes = FALSE, lwd = 0.4, col = "grey70", alpha = 0.4
+  )
+  
+  g <- g + xlab("UTM 9N Easting (km)") + ylab("UTM 9N Northing (km)") +
+    scale_size(range = c(0, 9)) +
+    guides(size = FALSE, fill = FALSE) +
+    theme_pbs() +
+    coord_equal(
+      expand = FALSE, xlim = range(pg_all$X * 10) + map_padding,
+      ylim = range(pg_all$Y * 10) + map_padding
+    )
+  
+  g
+}
+make_plot(pg_all)
+make_plot(pg_all, "pred_bin") + 
+  scale_fill_gradient2(
+    midpoint = 0.5,
+    low = scales::muted("blue"), 
+    mid = "white",
+    high = scales::muted("red"))
+```
+
+Annual index plot:
+
+```{r violin-plot}
+yr_est <- apply(out, c(2, 3), sum)
+yr_est <- reshape2::melt(yr_est) %>%
+  rename(i = Var1, fake_year = Var2) %>%
+  inner_join(fake_yrs, by = "fake_year")
+
+ggplot(yr_est, aes(as.factor(year), value * 1e3 * cell_area)) +
+  geom_violin() +
+  theme_pbs() +
+  ylim(0, NA)
+```
