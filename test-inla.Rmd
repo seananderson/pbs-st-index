@@ -33,13 +33,14 @@ d_survey_sets <- get_survey_sets("pacific cod")
 ```
 
 ```{r local-load, echo=FALSE, eval=TRUE, include=FALSE, cache=FALSE}
-d_survey_sets <- readRDS("../gfplot/inst/pcod-cache/pbs-survey-sets.rds")
+# local, e.g. for Sean off the network:
+d_survey_sets <- readRDS("../gfsynopsis/report/data-cache/pacific-cod.rds")$survey_sets
 ```
 
 Set which survey we want:
 
 ```{r survey-selection, cache=FALSE}
-survey <- "Queen Charlotte Sound Synoptic Survey"
+survey <- "SYN QCS"
 survey_short <- "QCS"
 ```
 
@@ -62,7 +63,7 @@ d$Y <- d$Y / 10 # for computational purposes
 
 dat <- rename(d, orig_year = year, year = fake_year)
 
-pg_out <- make_prediction_grid(d, region = survey_short)
+pg_out <- gfplot:::make_prediction_grid(d, survey = survey)
 cell_area <- pg_out$cell_area
 pg <- pg_out$grid
 pg$X <- pg$X / 10
@@ -72,14 +73,14 @@ pg$Y <- pg$Y / 10
 Fit models:
 
 ```{r inla-fit, message=FALSE, warning=FALSE, results='hide'}
-m_inla_bin <- fit_inla(dat,
-  response = "present", n_knots = 50, fit_model = TRUE,
+m_inla_bin <- fit_inla2(dat,
+  response = "present", n_knots = 80, fit_model = TRUE,
   family = "binomial", plot = TRUE, kmeans = TRUE, include_depth = FALSE
 )
 
 dpos <- filter(dat, present == 1)
 dpos$density <- dpos$density * 1e3 # for computational purposes; too small otherwise
-m_inla_pos <- fit_inla(dpos, n_knots = 50, fit_model = TRUE,
+m_inla_pos <- fit_inla2(dpos, n_knots = 80, fit_model = TRUE,
   response = "density", kmeans = TRUE, include_depth = FALSE,
   family = "gamma"
 )
@@ -171,7 +172,7 @@ Calculate bootstrapped design-based index:
 
 ```{r boot}
 surv <- d_survey_sets %>%
-  filter(survey_series_desc == survey) %>%
+  filter(survey_abbrev == survey) %>%
   select(-sample_id) %>%
   unique()
 
@@ -184,7 +185,7 @@ calc_bio <- function(dat, i = seq_len(nrow(dat))) {
     pull(biomass)
 }
 
-boot_biomass <- function(dat, reps = 1000) {
+boot_biomass <- function(dat, reps = 500) {
   out <- dat %>%
     group_by(year, species_common_name, survey_series_desc) %>%
     do({
