@@ -29,7 +29,7 @@ source("fit-inla.R")
 Start by reading in the data:
 
 ```{r get-data, eval=FALSE}
-d_survey_sets <- get_survey_sets("pacific cod")
+d_survey_sets <- gfplot::get_survey_sets("pacific cod", ssid = 1, join_sample_ids = TRUE)
 ```
 
 ```{r local-load, echo=FALSE, eval=TRUE, include=FALSE, cache=FALSE}
@@ -51,8 +51,11 @@ d <- gfplot:::tidy_survey_sets(d_survey_sets,
   survey = survey,
   years = 2000:2017
 )
+
 sum(is.na(d$depth))
-d <- d[!is.na(d$depth), , drop = FALSE]
+
+d <- d[!is.na(d$depth), , drop = FALSE] # removes NA's 
+
 d <- gfplot:::scale_survey_predictors(d)
 head(d)
 
@@ -63,7 +66,7 @@ d$Y <- d$Y / 10 # for computational purposes
 
 dat <- rename(d, orig_year = year, year = fake_year)
 
-pg_out <- gfplot:::make_prediction_grid(d, survey = survey)
+pg_out <- gfplot:::make_prediction_grid(dat, survey = survey) # THIS WAS BROKEN FOR PHILINA until d was changed to dat
 cell_area <- pg_out$cell_area
 pg <- pg_out$grid
 pg$X <- pg$X / 10
@@ -104,6 +107,8 @@ pg_all <- bind_rows(replicate(dim(p_bin)[3], pg_one_year, simplify = FALSE))
 pg_all$year <- rep(unique(pg$year), each = nrow(pg_one_year))
 out_long <- reshape2::melt(out_median)
 pg_all$pred <- out_long$value
+
+# tail(pg_all)
 ```
 
 Spatiotemporal plot:
@@ -117,22 +122,24 @@ map_padding <- c(-5, 5)
 
 g <- ggplot(pg_all, aes(X * 10, Y * 10)) +
   geom_raster(aes(fill = sqrt(pred))) +
-  scale_fill_viridis_c(option = "C") +
-  facet_wrap(~ year) +
+  scale_fill_viridis_c(trans = "sqrt") +
+  #scale_fill_viridis_c(option = "C") +
+  facet_wrap(~ orig_year) +
   geom_polygon(
     data = coast, aes_string(x = "X", y = "Y", group = "PID"),
     fill = "grey80"
   ) +
   geom_point(
-    data = filter(d, present == 1),
+    data = filter(dat, present == 1),
     aes(x = X * 10, y = Y * 10, size = density), inherit.aes = FALSE,
     pch = 21, col = "white", alpha = 0.3
   ) +
   geom_point(
-    data = filter(d, present == 0),
+    data = filter(dat, present == 0),
     aes(x = X * 10, y = Y * 10), inherit.aes = FALSE,
     pch = 4, col = "white", alpha = 0.2
   )
+# g
 
 g <- g + geom_path(
   data = isobath, aes_string(
@@ -141,6 +148,7 @@ g <- g + geom_path(
   ),
   inherit.aes = FALSE, lwd = 0.4, col = "grey70", alpha = 0.4
 )
+# g
 
 g <- g + xlab("UTM 9N Easting (km)") + ylab("UTM 9N Northing (km)") +
   scale_size(range = c(0, 9)) +
@@ -171,19 +179,27 @@ ggplot(yr_est, aes(as.factor(year), value * 1e3 * cell_area)) +
 Calculate bootstrapped design-based index:
 
 ```{r boot}
+# THIS CHUNK IS BROKEN IF join_sample_ids = FALSE in get_srvey_sets
+
 surv <- d_survey_sets %>%
   filter(survey_abbrev == survey) %>%
-  select(-sample_id) %>%
+  select(-sample_id) %>% # try changing sample to survey_id because sample_id not found
   unique()
+
+glimpse(surv)
+
 
 calc_bio <- function(dat, i = seq_len(nrow(dat))) {
   dat[i, , drop = FALSE] %>%
-    group_by(year, survey_id, area_km2, grouping_code) %>%
+    group_by(year, survey_id, area_km2, grouping_code) %>% # area_km2 not found...
     summarise(density = mean(density_kgpm2 * 1e6)) %>%
     group_by(year) %>%
     summarise(biomass = sum(density * area_km2)) %>%
     pull(biomass)
 }
+
+calc_bio(surv)
+
 
 boot_biomass <- function(dat, reps = 500) {
   out <- dat %>%
