@@ -29,7 +29,8 @@ source("fit-inla.R")
 Start by reading in the data:
 
 ```{r get-data, eval=FALSE}
-d_survey_sets <- gfplot::get_survey_sets("pacific cod", ssid = 1)
+d_survey_sets <- gfplot::get_survey_sets("pacific cod", ssid = 1, 
+  join_sample_ids = TRUE)
 ```
 
 ```{r local-load, echo=FALSE, eval=TRUE, include=FALSE, cache=FALSE}
